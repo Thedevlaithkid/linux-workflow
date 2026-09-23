@@ -57,7 +57,7 @@ jobs:
             --archive-areas "main universe multiverse" \
             --binary-images iso-hybrid \
             --linux-flavours generic \
-            --iso-volid "UBUNTU_CUSTOM" \
+            --iso-volume "UBUNTU_CUSTOM" \
             --iso-application "DevLaith Ubuntu"
 
       - name: Select flavor packages
