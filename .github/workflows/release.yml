@@ -62,23 +62,34 @@ jobs:
           sudo apt-get install -y debootstrap xorriso squashfs-tools live-build
 
       - name: Detect Ubuntu mirror
+        id: mirror
         env:
           SERIES: ${{ inputs.ubuntu_series }}
+          REQUESTED_ARCH: ${{ inputs.architectures }}
         run: |
           if curl -sf "http://archive.ubuntu.com/ubuntu/dists/${SERIES}/Release" -o /dev/null; then
             echo "MIRROR=http://archive.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
             echo "OLD=false" >> "$GITHUB_ENV"
             echo "P: Using archive.ubuntu.com for ${SERIES}"
+            echo "ARCH=${REQUESTED_ARCH}" >> "$GITHUB_OUTPUT"
           else
             echo "MIRROR=http://old-releases.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
             echo "OLD=true" >> "$GITHUB_ENV"
             echo "P: ${SERIES} is EOL, using old-releases.ubuntu.com"
+            # Ubuntu only started shipping amd64 with 5.10 (breezy). For older
+            # releases force i386 regardless of the requested arch.
+            if [ "${REQUESTED_ARCH}" = "amd64" ]; then
+              echo "P: ${SERIES} predates amd64 (first amd64 release: breezy 5.10), forcing i386"
+              echo "ARCH=i386" >> "$GITHUB_OUTPUT"
+            else
+              echo "ARCH=${REQUESTED_ARCH}" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Bootstrap rootfs with debootstrap
         env:
           SERIES: ${{ inputs.ubuntu_series }}
-          ARCH: ${{ inputs.architectures }}
+          ARCH: ${{ steps.mirror.outputs.ARCH }}
           MIRROR: ${{ env.MIRROR }}
           OLD: ${{ env.OLD }}
         run: |
@@ -100,7 +111,7 @@ jobs:
         if: ${{ inputs.output_format == 'live-iso' && env.OLD == 'false' }}
         env:
           SERIES: ${{ inputs.ubuntu_series }}
-          ARCH: ${{ inputs.architectures }}
+          ARCH: ${{ steps.mirror.outputs.ARCH }}
           KFLAVOUR: ${{ inputs.linux_flavours }}
           FLAVOR: ${{ inputs.flavor }}
           MIRROR: ${{ env.MIRROR }}
@@ -128,7 +139,7 @@ jobs:
       - name: Stage image
         env:
           SERIES: ${{ inputs.ubuntu_series }}
-          ARCH: ${{ inputs.architectures }}
+          ARCH: ${{ steps.mirror.outputs.ARCH }}
           OLD: ${{ env.OLD }}
         run: |
           VERSION="${{ inputs.version }}"
