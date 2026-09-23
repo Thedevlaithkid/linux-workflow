@@ -61,28 +61,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y debootstrap xorriso squashfs-tools live-build
 
-      - name: Harden debootstrap for legacy metadata
-        if: ${{ steps.mirror.outputs.OLD == 'true' }}
-        run: |
-          python3 - <<'PY'
-import re
-p = "/usr/share/debootstrap/functions"
-s = open(p).read()
-before = s
-# warty-era Packages can lack a Size: field for some stanzas, leaving the
-# size blank and killing the download-size accounting with a shell
-# "arithmetic expression" error. Treat an empty size as 0.
-s = s.replace('size="${details##* }";\n\t\t\ttotaldebs=$(($totaldebs + $size))',
-              'size="${details##* }";\n\t\t\t[ -z "$size" ] && size=0\n\t\t\ttotaldebs=$(($totaldebs + $size))')
-s = re.sub(r'progress_next \$\(\(\$dloaddebs \+ \$size\)\)',
-           'progress_next $(($dloaddebs + ${size:-0}))', s)
-s = re.sub(r'dloaddebs=\$\(\(\$dloaddebs \+ \$size\)\)',
-           'dloaddebs=$((dloaddebs + ${size:-0}))', s)
-assert s != before, "no patch applied"
-open(p, "w").write(s)
-print("patched debootstrap functions")
-PY
-
       - name: Detect Ubuntu mirror
         id: mirror
         env:
@@ -91,12 +69,14 @@ PY
         run: |
           if curl -sf "http://archive.ubuntu.com/ubuntu/dists/${SERIES}/Release" -o /dev/null; then
             echo "MIRROR=http://archive.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
+            echo "MIRROR=http://archive.ubuntu.com/ubuntu/" >> "$GITHUB_OUTPUT"
             echo "OLD=false" >> "$GITHUB_ENV"
             echo "OLD=false" >> "$GITHUB_OUTPUT"
             echo "P: Using archive.ubuntu.com for ${SERIES}"
             echo "ARCH=${REQUESTED_ARCH}" >> "$GITHUB_OUTPUT"
           else
             echo "MIRROR=http://old-releases.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
+            echo "MIRROR=http://old-releases.ubuntu.com/ubuntu/" >> "$GITHUB_OUTPUT"
             echo "OLD=true" >> "$GITHUB_ENV"
             echo "OLD=true" >> "$GITHUB_OUTPUT"
             echo "P: ${SERIES} is EOL, using old-releases.ubuntu.com"
@@ -110,12 +90,34 @@ PY
             fi
           fi
 
+      - name: Harden debootstrap for legacy metadata
+        if: ${{ steps.mirror.outputs.OLD == 'true' }}
+        run: |
+          python3 - <<'PY'
+          import re
+          p = "/usr/share/debootstrap/functions"
+          s = open(p).read()
+          before = s
+          # warty-era Packages can lack a Size: field for some stanzas, leaving
+          # the size blank and killing the download-size accounting with a shell
+          # "arithmetic expression" error. Treat an empty size as 0.
+          s = s.replace('size="${details##* }";\n\t\t\ttotaldebs=$(($totaldebs + $size))',
+                        'size="${details##* }";\n\t\t\t[ -z "$size" ] && size=0\n\t\t\ttotaldebs=$(($totaldebs + $size))')
+          s = re.sub(r'progress_next \$\(\(\$dloaddebs \+ \$size\)\)',
+                     'progress_next $(($dloaddebs + ${size:-0}))', s)
+          s = re.sub(r'dloaddebs=\$\(\(\$dloaddebs \+ \$size\)\)',
+                     'dloaddebs=$((dloaddebs + ${size:-0}))', s)
+          assert s != before, "no patch applied"
+          open(p, "w").write(s)
+          print("patched debootstrap functions")
+          PY
+
       - name: Bootstrap rootfs with debootstrap
         env:
           SERIES: ${{ inputs.ubuntu_series }}
           ARCH: ${{ steps.mirror.outputs.ARCH }}
-          MIRROR: ${{ env.MIRROR }}
-          OLD: ${{ env.OLD }}
+          MIRROR: ${{ steps.mirror.outputs.MIRROR }}
+          OLD: ${{ steps.mirror.outputs.OLD }}
         run: |
           sudo mkdir -p rootfs
           if [ "${OLD}" = "true" ]; then
@@ -153,7 +155,7 @@ PY
           ARCH: ${{ steps.mirror.outputs.ARCH }}
           KFLAVOUR: ${{ inputs.linux_flavours }}
           FLAVOR: ${{ inputs.flavor }}
-          MIRROR: ${{ env.MIRROR }}
+          MIRROR: ${{ steps.mirror.outputs.MIRROR }}
         run: |
           mkdir -p ubuntu-live
           cd ubuntu-live
@@ -179,7 +181,7 @@ PY
         env:
           SERIES: ${{ inputs.ubuntu_series }}
           ARCH: ${{ steps.mirror.outputs.ARCH }}
-          OLD: ${{ env.OLD }}
+          OLD: ${{ steps.mirror.outputs.OLD }}
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
