@@ -112,8 +112,9 @@ jobs:
           cd ubuntu-live
           if [ "${OLD}" = "true" ]; then
             # Pre-SHA256 era release files (e.g. warty 2004) only carry
-            # MD5Sum/SHA1 sections; force debootstrap to use MD5.
-            sudo env DEBOOTSTRAP_CHECKSUM_FIELD=MD5SUM lb build
+            # MD5Sum/SHA1 sections. debootstrap derives its checksum field
+            # from SHA_SIZE, so pin it to SHA1 which those archives provide.
+            sudo env SHA_SIZE=1 lb build
           else
             sudo lb build
           fi
