@@ -39,7 +39,7 @@ jobs:
       - name: Configure Buildroot
         run: |
           cd "$RUNNER_TEMP"/buildroot-2025.02
-          make BR2_EXTERNAL="$GITHUB_WORKSPACE" BR2_DEFCONFIG=devlaith_defconfig defconfig
+          make BR2_EXTERNAL="$GITHUB_WORKSPACE" devlaith_defconfig
 
       - name: Build distro
         run: |
