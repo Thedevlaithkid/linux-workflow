@@ -121,28 +121,30 @@ jobs:
         run: |
           sudo mkdir -p rootfs
           if [ "${OLD}" = "true" ]; then
-            sudo apt-get install -y qemu-user-static >/dev/null
             set +e
-            sudo env SHA_SIZE=1 debootstrap \
-              --arch "${ARCH}" --no-check-gpg "${SERIES}" rootfs "${MIRROR}" > /tmp/ds-full.log 2>&1
-            RC=$?
+            timeout 1800 sudo env SHA_SIZE=1 debootstrap \
+              --arch "${ARCH}" --no-check-gpg "${SERIES}" rootfs "${MIRROR}" 2>&1 | tee /tmp/ds-full.log
+            RC=${PIPESTATUS[0]}
             set -e
             if [ ${RC} -ne 0 ]; then
               echo "=== FULL debootstrap failed (${RC}); switching to --foreign + qemu ==="
               sudo tail -n 30 /tmp/ds-full.log
-              sudo tail -n 30 rootfs/debootstrap/debootstrap.log 2>/dev/null || true
               sudo rm -rf rootfs
               sudo mkdir -p rootfs/usr/bin
+              timeout 300 sudo apt-get install -y qemu-user-static 2>&1 | tail -n 20
               sudo cp /usr/bin/qemu-i386-static rootfs/usr/bin/ 2>/dev/null || true
-              sudo env SHA_SIZE=1 debootstrap \
-                --arch "${ARCH}" --no-check-gpg --foreign "${SERIES}" rootfs "${MIRROR}" > /tmp/ds-foreign.log 2>&1
-              echo "=== FOREIGN debootstrap exit: $? ==="
-              if [ "${ARCH}" = "i386" ]; then
-                sudo chroot rootfs /debootstrap/debootstrap --second-stage > /tmp/ds-2nd.log 2>&1
-                echo "=== SECOND-STAGE exit: $? ==="
+              set +e
+              timeout 1800 sudo env SHA_SIZE=1 debootstrap \
+                --arch "${ARCH}" --no-check-gpg --foreign "${SERIES}" rootfs "${MIRROR}" 2>&1 | tee /tmp/ds-foreign.log
+              RC=${PIPESTATUS[0]}
+              set -e
+              echo "=== FOREIGN debootstrap exit: ${RC} ==="
+              if [ "${ARCH}" = "i386" ] && [ ${RC} -eq 0 ]; then
+                set +e
+                timeout 1800 sudo chroot rootfs /debootstrap/debootstrap --second-stage 2>&1 | tee /tmp/ds-2nd.log
+                echo "=== SECOND-STAGE exit: ${PIPESTATUS[0]} ==="
+                set -e
               fi
-              sudo tail -n 40 /tmp/ds-foreign.log
-              sudo tail -n 40 /tmp/ds-2nd.log 2>/dev/null || true
             fi
           else
             sudo debootstrap --arch "${ARCH}" "${SERIES}" rootfs "${MIRROR}"
