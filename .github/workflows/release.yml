@@ -43,29 +43,55 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y live-build debootstrap xorriso squashfs-tools
 
+      - name: Detect Ubuntu mirror
+        id: mirror
+        env:
+          SERIES: ${{ inputs.ubuntu_series }}
+        run: |
+          if curl -sf "http://archive.ubuntu.com/ubuntu/dists/${SERIES}/Release" -o /dev/null; then
+            echo "MIRROR=http://archive.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
+            echo "OLD=false" >> "$GITHUB_ENV"
+            echo "P: Using archive.ubuntu.com for ${SERIES}"
+          else
+            echo "MIRROR=http://old-releases.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
+            echo "OLD=true" >> "$GITHUB_ENV"
+            echo "P: ${SERIES} is EOL, using old-releases.ubuntu.com"
+          fi
+
       - name: Configure live-build
         env:
           SERIES: ${{ inputs.ubuntu_series }}
-          FLAVOR: ${{ inputs.flavor }}
+          MIRROR: ${{ env.MIRROR }}
+          OLD: ${{ env.OLD }}
         run: |
           mkdir -p ubuntu-live
           cd ubuntu-live
-          lb config \
-            --distribution "${SERIES}" \
+          ARGS=(--distribution "${SERIES}" \
             --architectures amd64 \
             --mode ubuntu \
             --archive-areas "main universe multiverse" \
             --binary-images iso-hybrid \
             --linux-flavours generic \
             --iso-volume "UBUNTU_CUSTOM" \
-            --iso-application "DevLaith Ubuntu"
+            --iso-application "DevLaith Ubuntu" \
+            --parent-mirror-bootstrap "${MIRROR}" \
+            --parent-mirror-chroot "${MIRROR}" \
+            --parent-mirror-binary "${MIRROR}")
+          if [ "${OLD}" = "true" ]; then
+            ARGS+=(--security false --updates false --apt-secure false \
+              --debootstrap-options "--no-check-gpg --variant=minbase")
+          fi
+          lb config "${ARGS[@]}"
 
       - name: Select flavor packages
         env:
           FLAVOR: ${{ inputs.flavor }}
         run: |
           cd ubuntu-live
-          echo "${FLAVOR}" > config/package-lists/flavor.list.chroot
+          case "${FLAVOR}" in
+            "none (server)") : > config/package-lists/flavor.list.chroot ;;
+            *) echo "${FLAVOR}" > config/package-lists/flavor.list.chroot ;;
+          esac
 
       - name: Build ISO
         run: |
