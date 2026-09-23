@@ -95,14 +95,29 @@ jobs:
         run: |
           sudo mkdir -p rootfs
           if [ "${OLD}" = "true" ]; then
-            # Pre-SHA256 era release files (e.g. warty 2004) only carry
-            # MD5Sum/SHA1 sections. debootstrap derives its checksum field
-            # from SHA_SIZE, so pin it to SHA1 which those archives provide,
-            # and skip gpg checks (no usable signatures for EOL archives).
+            sudo apt-get install -y qemu-user-static >/dev/null
+            set +e
             sudo env SHA_SIZE=1 debootstrap \
-              --arch "${ARCH}" \
-              --no-check-gpg \
-              "${SERIES}" rootfs "${MIRROR}"
+              --arch "${ARCH}" --no-check-gpg "${SERIES}" rootfs "${MIRROR}" > /tmp/ds-full.log 2>&1
+            RC=$?
+            set -e
+            if [ ${RC} -ne 0 ]; then
+              echo "=== FULL debootstrap failed (${RC}); switching to --foreign + qemu ==="
+              sudo tail -n 30 /tmp/ds-full.log
+              sudo tail -n 30 rootfs/debootstrap/debootstrap.log 2>/dev/null || true
+              sudo rm -rf rootfs
+              sudo mkdir -p rootfs/usr/bin
+              sudo cp /usr/bin/qemu-i386-static rootfs/usr/bin/ 2>/dev/null || true
+              sudo env SHA_SIZE=1 debootstrap \
+                --arch "${ARCH}" --no-check-gpg --foreign "${SERIES}" rootfs "${MIRROR}" > /tmp/ds-foreign.log 2>&1
+              echo "=== FOREIGN debootstrap exit: $? ==="
+              if [ "${ARCH}" = "i386" ]; then
+                sudo chroot rootfs /debootstrap/debootstrap --second-stage > /tmp/ds-2nd.log 2>&1
+                echo "=== SECOND-STAGE exit: $? ==="
+              fi
+              sudo tail -n 40 /tmp/ds-foreign.log
+              sudo tail -n 40 /tmp/ds-2nd.log 2>/dev/null || true
+            fi
           else
             sudo debootstrap --arch "${ARCH}" "${SERIES}" rootfs "${MIRROR}"
           fi
@@ -164,6 +179,22 @@ jobs:
         with:
           name: ubuntu-image
           path: dist/
+
+      - name: Upload bootstrap logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-logs
+          path: |
+            /tmp/ds-*.log
+            /home/runner/work/linux-workflow/linux-workflow/rootfs/debootstrap/debootstrap.log
+
+      - name: Print diagnostics
+        if: ${{ always() }}
+        run: |
+          echo "=== /tmp/ds-full.log ==="; sudo tail -n 80 /tmp/ds-full.log 2>/dev/null || true
+          echo "=== /tmp/ds-foreign.log ==="; sudo tail -n 60 /tmp/ds-foreign.log 2>/dev/null || true
+          echo "=== /tmp/ds-2nd.log ==="; sudo tail -n 60 /tmp/ds-2nd.log 2>/dev/null || true
 
       - name: Create GitHub Release
         env:
