@@ -78,8 +78,7 @@ jobs:
             --parent-mirror-chroot "${MIRROR}" \
             --parent-mirror-binary "${MIRROR}")
           if [ "${OLD}" = "true" ]; then
-            ARGS+=(--security false --updates false --apt-secure false \
-              --debootstrap-options "--no-check-gpg --variant=minbase")
+            ARGS+=(--security false --apt-secure false)
           fi
           lb config "${ARGS[@]}"
 
