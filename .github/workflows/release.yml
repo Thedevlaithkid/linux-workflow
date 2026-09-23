@@ -61,6 +61,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y debootstrap xorriso squashfs-tools live-build
 
+      - name: Harden debootstrap for legacy metadata
+        if: ${{ steps.mirror.outputs.OLD == 'true' }}
+        run: |
+          python3 - <<'PY'
+import re
+p = "/usr/share/debootstrap/functions"
+s = open(p).read()
+before = s
+# warty-era Packages can lack a Size: field for some stanzas, leaving the
+# size blank and killing the download-size accounting with a shell
+# "arithmetic expression" error. Treat an empty size as 0.
+s = s.replace('size="${details##* }";\n\t\t\ttotaldebs=$(($totaldebs + $size))',
+              'size="${details##* }";\n\t\t\t[ -z "$size" ] && size=0\n\t\t\ttotaldebs=$(($totaldebs + $size))')
+s = re.sub(r'progress_next \$\(\(\$dloaddebs \+ \$size\)\)',
+           'progress_next $(($dloaddebs + ${size:-0}))', s)
+s = re.sub(r'dloaddebs=\$\(\(\$dloaddebs \+ \$size\)\)',
+           'dloaddebs=$((dloaddebs + ${size:-0}))', s)
+assert s != before, "no patch applied"
+open(p, "w").write(s)
+print("patched debootstrap functions")
+PY
+
       - name: Detect Ubuntu mirror
         id: mirror
         env:
@@ -70,11 +92,13 @@ jobs:
           if curl -sf "http://archive.ubuntu.com/ubuntu/dists/${SERIES}/Release" -o /dev/null; then
             echo "MIRROR=http://archive.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
             echo "OLD=false" >> "$GITHUB_ENV"
+            echo "OLD=false" >> "$GITHUB_OUTPUT"
             echo "P: Using archive.ubuntu.com for ${SERIES}"
             echo "ARCH=${REQUESTED_ARCH}" >> "$GITHUB_OUTPUT"
           else
             echo "MIRROR=http://old-releases.ubuntu.com/ubuntu/" >> "$GITHUB_ENV"
             echo "OLD=true" >> "$GITHUB_ENV"
+            echo "OLD=true" >> "$GITHUB_OUTPUT"
             echo "P: ${SERIES} is EOL, using old-releases.ubuntu.com"
             # Ubuntu only started shipping amd64 with 5.10 (breezy). For older
             # releases force i386 regardless of the requested arch.
@@ -123,7 +147,7 @@ jobs:
           fi
 
       - name: Build live-iso (modern releases only)
-        if: ${{ inputs.output_format == 'live-iso' && env.OLD == 'false' }}
+        if: ${{ inputs.output_format == 'live-iso' && steps.mirror.outputs.OLD == 'false' }}
         env:
           SERIES: ${{ inputs.ubuntu_series }}
           ARCH: ${{ steps.mirror.outputs.ARCH }}
