@@ -1,12 +1,28 @@
-name: Build Distro Release
+name: Build Ubuntu ISO
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag/version (optional, defaults to timestamp)"
+        description: "Custom release version (e.g. 1.0.0)"
         required: false
         default: ""
+      ubuntu_series:
+        description: "Ubuntu release codename"
+        required: false
+        default: "noble"
+      flavor:
+        type: choice
+        description: "Flavor / desktop"
+        options:
+          - xubuntu-desktop
+          - ubuntu-desktop
+          - ubuntu-desktop-minimal
+          - kubuntu-desktop
+          - lubuntu-desktop
+          - xfce4
+          - none (server)
+        default: "xubuntu-desktop"
   push:
     tags:
       - "v*"
@@ -22,52 +38,63 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Buildroot dependencies
+      - name: Install live-build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            sed make binutils build-essential gcc g++ bash patch gzip bzip2 \
-            perl tar cpio unzip rsync wget libncurses-dev git diffutils \
-            file bc
+          sudo apt-get install -y live-build debootstrap xorriso squashfs-tools
 
-      - name: Download Buildroot
+      - name: Configure live-build
+        env:
+          SERIES: ${{ inputs.ubuntu_series }}
+          FLAVOR: ${{ inputs.flavor }}
         run: |
-          cd "$RUNNER_TEMP"
-          curl -L -o buildroot.tar.gz "https://buildroot.org/downloads/buildroot-2025.02.tar.gz"
-          tar xzf buildroot.tar.gz
+          mkdir -p ubuntu-live
+          cd ubuntu-live
+          lb config \
+            --distribution "${SERIES}" \
+            --architectures amd64 \
+            --mode ubuntu \
+            --archive-areas "main universe multiverse" \
+            --binary-images iso-hybrid \
+            --linux-flavours generic \
+            --iso-volid "UBUNTU_CUSTOM" \
+            --iso-application "DevLaith Ubuntu"
 
-      - name: Configure Buildroot
+      - name: Select flavor packages
+        env:
+          FLAVOR: ${{ inputs.flavor }}
         run: |
-          cd "$RUNNER_TEMP"/buildroot-2025.02
-          make BR2_EXTERNAL="$GITHUB_WORKSPACE" devlaith_defconfig
+          cd ubuntu-live
+          echo "${FLAVOR}" > config/package-lists/flavor.list.chroot
 
-      - name: Build distro
+      - name: Build ISO
         run: |
-          cd "$RUNNER_TEMP"/buildroot-2025.02
-          make BR2_EXTERNAL="$GITHUB_WORKSPACE" -j"$(nproc)"
+          cd ubuntu-live
+          sudo lb build
 
       - name: Stage ISO
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$RUNNER_TEMP"/buildroot-2025.02/output/images/rootfs.iso9660 "$GITHUB_WORKSPACE/dist/devlaith.iso"
-          cp "$RUNNER_TEMP"/buildroot-2025.02/output/images/bzImage "$GITHUB_WORKSPACE/dist/" 2>/dev/null || true
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: devlaith-iso
-          path: dist/
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
           [ -z "$VERSION" ] && VERSION="$(date +%Y.%m.%d-%H%M%S)"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          sudo cp ubuntu-live/live-image-amd64.hybrid.iso "dist/ubuntu-${VERSION}.iso"
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-iso
+          path: dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           gh release create "v${VERSION}" \
-            "dist/devlaith.iso" \
-            --title "DevLaith Linux v${VERSION}" \
-            --notes "Automated build from commit ${GITHUB_SHA}."
+            "dist/ubuntu-${VERSION}.iso" \
+            --title "DevLaith Ubuntu v${VERSION}" \
+            --notes "Custom Ubuntu ${{ inputs.ubuntu_series }} build from commit ${GITHUB_SHA}."
