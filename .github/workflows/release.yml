@@ -1,0 +1,73 @@
+name: Build Distro Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag/version (optional, defaults to timestamp)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Buildroot dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            sed make binutils build-essential gcc g++ bash patch gzip bzip2 \
+            perl tar cpio unzip rsync wget libncurses-dev git diffutils \
+            file bc
+
+      - name: Download Buildroot
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -L -o buildroot.tar.gz "https://buildroot.org/downloads/buildroot-2025.02.tar.gz"
+          tar xzf buildroot.tar.gz
+
+      - name: Configure Buildroot
+        run: |
+          cd "$RUNNER_TEMP"/buildroot-2025.02
+          make BR2_EXTERNAL="$GITHUB_WORKSPACE" BR2_DEFCONFIG=devlaith_defconfig defconfig
+
+      - name: Build distro
+        run: |
+          cd "$RUNNER_TEMP"/buildroot-2025.02
+          make BR2_EXTERNAL="$GITHUB_WORKSPACE" -j"$(nproc)"
+
+      - name: Stage ISO
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$RUNNER_TEMP"/buildroot-2025.02/output/images/rootfs.iso9660 "$GITHUB_WORKSPACE/dist/devlaith.iso"
+          cp "$RUNNER_TEMP"/buildroot-2025.02/output/images/bzImage "$GITHUB_WORKSPACE/dist/" 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: devlaith-iso
+          path: dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          [ -z "$VERSION" ] && VERSION="$(date +%Y.%m.%d-%H%M%S)"
+          gh release create "v${VERSION}" \
+            "dist/devlaith.iso" \
+            --title "DevLaith Linux v${VERSION}" \
+            --notes "Automated build from commit ${GITHUB_SHA}."
