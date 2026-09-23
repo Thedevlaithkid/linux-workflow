@@ -91,7 +91,6 @@ jobs:
             sudo env SHA_SIZE=1 debootstrap \
               --arch "${ARCH}" \
               --no-check-gpg \
-              --variant=minbase \
               "${SERIES}" rootfs "${MIRROR}"
           else
             sudo debootstrap --arch "${ARCH}" "${SERIES}" rootfs "${MIRROR}"
