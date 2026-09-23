@@ -1,4 +1,4 @@
-name: Build Ubuntu ISO
+name: Build Ubuntu Image
 
 on:
   workflow_dispatch:
@@ -8,23 +8,30 @@ on:
         required: false
         default: ""
       ubuntu_series:
-        description: "Ubuntu release codename"
+        description: "Ubuntu release codename (e.g. noble, warty)"
         required: false
         default: "noble"
       architectures:
         type: choice
-        description: "Architecture"
+        description: "Architecture (i386 for pre-6.06 releases)"
         options:
           - amd64
           - i386
         default: "amd64"
+      output_format:
+        type: choice
+        description: "What to produce"
+        options:
+          - rootfs-tarball
+          - live-iso
+        default: "rootfs-tarball"
       linux_flavours:
-        description: "Kernel flavour (e.g. generic, 386, k7)"
+        description: "Kernel flavour for live-iso (e.g. generic, 386, k7)"
         required: false
         default: "generic"
       flavor:
         type: choice
-        description: "Flavor / desktop"
+        description: "Flavor / desktop for live-iso"
         options:
           - xubuntu-desktop
           - ubuntu-desktop
@@ -49,13 +56,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install live-build tools
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y live-build debootstrap xorriso squashfs-tools
+          sudo apt-get install -y debootstrap xorriso squashfs-tools live-build
 
       - name: Detect Ubuntu mirror
-        id: mirror
         env:
           SERIES: ${{ inputs.ubuntu_series }}
         run: |
@@ -69,17 +75,41 @@ jobs:
             echo "P: ${SERIES} is EOL, using old-releases.ubuntu.com"
           fi
 
-      - name: Configure live-build
+      - name: Bootstrap rootfs with debootstrap
+        env:
+          SERIES: ${{ inputs.ubuntu_series }}
+          ARCH: ${{ inputs.architectures }}
+          MIRROR: ${{ env.MIRROR }}
+          OLD: ${{ env.OLD }}
+        run: |
+          sudo mkdir -p rootfs
+          if [ "${OLD}" = "true" ]; then
+            # Pre-SHA256 era release files (e.g. warty 2004) only carry
+            # MD5Sum/SHA1 sections. debootstrap derives its checksum field
+            # from SHA_SIZE, so pin it to SHA1 which those archives provide,
+            # and skip gpg checks (no usable signatures for EOL archives).
+            sudo env SHA_SIZE=1 debootstrap \
+              --arch "${ARCH}" \
+              --no-check-gpg \
+              --variant=minbase \
+              "${SERIES}" rootfs "${MIRROR}"
+          else
+            sudo debootstrap --arch "${ARCH}" "${SERIES}" rootfs "${MIRROR}"
+          fi
+
+      - name: Build live-iso (modern releases only)
+        if: ${{ inputs.output_format == 'live-iso' && env.OLD == 'false' }}
         env:
           SERIES: ${{ inputs.ubuntu_series }}
           ARCH: ${{ inputs.architectures }}
           KFLAVOUR: ${{ inputs.linux_flavours }}
+          FLAVOR: ${{ inputs.flavor }}
           MIRROR: ${{ env.MIRROR }}
-          OLD: ${{ env.OLD }}
         run: |
           mkdir -p ubuntu-live
           cd ubuntu-live
-          ARGS=(--distribution "${SERIES}" \
+          lb config \
+            --distribution "${SERIES}" \
             --architectures "${ARCH}" \
             --mode ubuntu \
             --archive-areas "main universe multiverse" \
@@ -89,39 +119,18 @@ jobs:
             --iso-application "DevLaith Ubuntu" \
             --parent-mirror-bootstrap "${MIRROR}" \
             --parent-mirror-chroot "${MIRROR}" \
-            --parent-mirror-binary "${MIRROR}")
-          if [ "${OLD}" = "true" ]; then
-            ARGS+=(--security false --apt-secure false)
-          fi
-          lb config "${ARGS[@]}"
-
-      - name: Select flavor packages
-        env:
-          FLAVOR: ${{ inputs.flavor }}
-        run: |
-          cd ubuntu-live
+            --parent-mirror-binary "${MIRROR}"
           case "${FLAVOR}" in
             "none (server)") : > config/package-lists/flavor.list.chroot ;;
             *) echo "${FLAVOR}" > config/package-lists/flavor.list.chroot ;;
           esac
+          sudo lb build
 
-      - name: Build ISO
+      - name: Stage image
         env:
-          OLD: ${{ env.OLD }}
-        run: |
-          cd ubuntu-live
-          if [ "${OLD}" = "true" ]; then
-            # Pre-SHA256 era release files (e.g. warty 2004) only carry
-            # MD5Sum/SHA1 sections. debootstrap derives its checksum field
-            # from SHA_SIZE, so pin it to SHA1 which those archives provide.
-            sudo env SHA_SIZE=1 lb build
-          else
-            sudo lb build
-          fi
-
-      - name: Stage ISO
-        env:
+          SERIES: ${{ inputs.ubuntu_series }}
           ARCH: ${{ inputs.architectures }}
+          OLD: ${{ env.OLD }}
         run: |
           VERSION="${{ inputs.version }}"
           if [ -z "$VERSION" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
@@ -130,20 +139,26 @@ jobs:
           [ -z "$VERSION" ] && VERSION="$(date +%Y.%m.%d-%H%M%S)"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          sudo cp ubuntu-live/"live-image-${ARCH}.hybrid.iso" "dist/ubuntu-${VERSION}.iso"
+          if [ "${{ inputs.output_format }}" = "live-iso" ] && [ "${OLD}" = "false" ]; then
+            sudo cp ubuntu-live/"live-image-${ARCH}.hybrid.iso" "dist/ubuntu-${VERSION}-${SERIES}-${ARCH}.iso"
+          else
+            # Warty (2004) predates the live CD (first was Hoary 5.04), so
+            # legacy releases ship as a rootfs tarball.
+            echo "${{ github.event_name }}: legacy release -> rootfs tarball"
+            sudo tar -C rootfs -czf "dist/ubuntu-${VERSION}-${SERIES}-${ARCH}.tar.gz" .
+          fi
           ls -lh dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-iso
+          name: ubuntu-image
           path: dist/
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${VERSION}" \
-            "dist/ubuntu-${VERSION}.iso" \
+          gh release create "v${VERSION}" dist/ubuntu-* \
             --title "DevLaith Ubuntu v${VERSION}" \
-            --notes "Custom Ubuntu ${{ inputs.ubuntu_series }} build from commit ${GITHUB_SHA}."
+            --notes "Custom Ubuntu ${{ inputs.ubuntu_series }}/${{ inputs.architectures }} build from commit ${GITHUB_SHA}."
